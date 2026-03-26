@@ -3,8 +3,13 @@ import crypto from "crypto"
 import jwt from "jsonwebtoken"
 import config from "../config/config.js"
 import sessionModel from "../models/session.model.js"
+import asyncHandler from "../middlewares/asyncHandler.js"
+import AppError from "../utils/AppError.js"
+import { generateTokens } from "../utils/token.js"
+import setRefreshTokenCookie from "../utils/cookie.js"
+import createSession from "../utils/session.js"
 
-export const register = async (req, res) => {
+export const register = asyncHandler(async (req, res) => {
     const { username, email, password } = req.body
 
     const isAlreadyExists = await userModel.findOne({
@@ -15,9 +20,7 @@ export const register = async (req, res) => {
     })
 
     if (isAlreadyExists) {
-        return res.status(409).json({
-            message: "An account with this username or email already exists. Please use different credentials."
-        })
+        throw new AppError("An account with this username or email already exists. Please use different credentials.", 409)
     }
 
     const hashedPassword = crypto.createHash("sha256").update(password).digest("hex")
@@ -28,30 +31,13 @@ export const register = async (req, res) => {
         password: hashedPassword
     })
 
-    const refreshToken = jwt.sign({
-        id: user._id
-    }, config.JWT_SECRET, { expiresIn: "7d" })
+    const { refreshToken, refreshTokenHash } = generateTokens(user._id)
 
-    const refreshTokenHashed = crypto.createHash("sha256").update(refreshToken).digest("hex")
+    const session = await createSession(user._id, refreshTokenHash, req)
 
-    const session = await sessionModel.create({
-        user: user._id,
-        refreshTokenHash: refreshTokenHashed,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"]
-    })
+    const { accessToken } = generateTokens(user._id, session._id)
 
-    const accessToken = jwt.sign({
-        id: user._id,
-        sessionId: session._id,
-    }, config.JWT_SECRET, { expiresIn: "15m" })
-
-    res.cookie("refreshToken", refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "strict",
-        maxAge: 7 * 24 * 60 * 60 * 1000 //7days
-    })
+    setRefreshTokenCookie(res, refreshToken)
 
     return res.status(201).json({
         message: "Account created successfully. Welcome aboard!",
@@ -62,17 +48,16 @@ export const register = async (req, res) => {
         },
         accessToken
     })
-}
+})
 
-export const login = async (req, res) => {
+// Login an existing user
+export const login = asyncHandler(async (req, res) => {
     const { email, password } = req.body
 
     const user = await userModel.findOne({ email })
 
     if (!user) {
-        return res.status(401).json({
-            message: "Invalid email or password. Please check your credentials and try again."
-        })
+        throw new AppError("Invalid email or password. Please check your credentials and try again.", 401)
     }
 
     const hashedPassword = crypto.createHash("sha256").update(password).digest("hex")
@@ -80,35 +65,16 @@ export const login = async (req, res) => {
     const isPasswordMatched = user.password === hashedPassword;
 
     if (!isPasswordMatched) {
-        return res.status(401).json({
-            message: "Invalid email or password. Please check your credentials and try again."
-        })
+        throw new AppError("Invalid email or password. Please check your credentials and try again.", 401)
     }
 
-    const refreshToken = jwt.sign({
-        id: user._id
-    }, config.JWT_SECRET, { expiresIn: "7d" })
+    const { refreshToken, refreshTokenHash } = generateTokens(user._id)
 
-    const refreshTokenHashed = crypto.createHash("sha256").update(refreshToken).digest("hex")
+    const session = await createSession(user._id, refreshTokenHash, req)
 
-    const session = await sessionModel.create({
-        user: user._id,
-        refreshTokenHash: refreshTokenHashed,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"]
-    })
+    const { accessToken } = generateTokens(user._id, session._id)
 
-    const accessToken = jwt.sign({
-        id: user._id,
-        sessionId: session._id,
-    }, config.JWT_SECRET, { expiresIn: "15m" })
-
-    res.cookie("refreshToken", refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "strict",
-        maxAge: 7 * 24 * 60 * 60 * 1000 //7days
-    })
+    setRefreshTokenCookie(res, refreshToken)
 
     return res.status(200).json({
         message: "Logged in successfully. Welcome back!",
@@ -119,14 +85,18 @@ export const login = async (req, res) => {
         },
         accessToken
     })
+})
 
-}
 
-
-export const getMe = async (req, res) => {
+// Get the currently authenticated user's profile
+export const getMe = asyncHandler(async (req, res) => {
     const userId = req.user.id
 
     const user = await userModel.findById(userId)
+
+    if (!user) {
+        throw new AppError("User not found. The account may have been deleted.", 404)
+    }
 
     return res.status(200).json({
         message: "Authenticated user profile fetched successfully.",
@@ -136,87 +106,74 @@ export const getMe = async (req, res) => {
             email: user.email,
         }
     })
-}
+})
 
 
-export const refresh = async (req, res) => {
+// Refresh the access token using a valid refresh token
+export const refresh = asyncHandler(async (req, res) => {
     const refreshToken = req.cookies.refreshToken;
 
     if (!refreshToken) {
-        return res.status(401).json({
-            message: "Refresh token is missing. Please log in again."
-        })
+        throw new AppError("Refresh token is missing. Please log in again.", 401)
     }
 
+    let decoded;
     try {
-        const decoded = jwt.verify(refreshToken, config.JWT_SECRET)
-
-        const refreshTokenHashed = crypto.createHash("sha256").update(refreshToken).digest("hex")
-
-        const session = await sessionModel.findOne({
-            refreshTokenHash: refreshTokenHashed,
-            revoked: false
-        })
-
-        if (!session) {
-            return res.status(401).json({
-                message: "Session not found or has been revoked. Please log in again."
-            })
-        }
-
-        const accessToken = jwt.sign({
-            id: decoded.id
-        }, config.JWT_SECRET, { expiresIn: "15m" })
-
-        const newRefreshToken = jwt.sign({
-            id: decoded.id
-        }, config.JWT_SECRET, { expiresIn: "7d" })
-
-        const newRefreshTokenHash = crypto.createHash("sha256").update(newRefreshToken).digest("hex")
-
-        session.refreshTokenHash = newRefreshTokenHash
-        await session.save()
-
-        res.cookie("refreshToken", newRefreshToken, {
-            httpOnly: true,
-            secure: true,
-            sameSite: "strict",
-            maxAge: 7 * 24 * 60 * 60 * 1000 //7days
-        })
-        return res.status(200).json({
-            message: "Access token refreshed successfully. New token issued.",
-            accessToken
-        })
-
+        decoded = jwt.verify(refreshToken, config.JWT_SECRET)
     } catch (error) {
-        return res.status(401).json({
-            message: "Refresh token is invalid or has expired. Please log in again."
-        })
+        throw new AppError("Refresh token is invalid or has expired. Please log in again.", 401)
     }
 
-
-}
-
-
-export const logout = async (req, res) => {
-    const refreshToken = req.cookies.refreshToken;
-
-    if (!refreshToken) {
-        return res.status(401).json({
-            message: "No active session found. You may already be logged out."
-        })
-    }
-
-    const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex")
+    const refreshTokenHash = crypto
+        .createHash("sha256")
+        .update(refreshToken)
+        .digest("hex")
 
     const session = await sessionModel.findOne({
         refreshTokenHash: refreshTokenHash,
         revoked: false
     })
+
     if (!session) {
-        return res.status(401).json({
-            message: "Session is invalid or has already been revoked."
-        })
+        throw new AppError("Session not found or has been revoked. Please log in again.", 401)
+    }
+
+    const { accessToken } = generateTokens(decoded.id, session._id)
+
+    const { refreshToken: newRefreshToken, refreshTokenHash: newRefreshTokenHash } = generateTokens(decoded.id)
+
+    session.refreshTokenHash = newRefreshTokenHash
+    await session.save()
+
+    setRefreshTokenCookie(res, newRefreshToken)
+
+    return res.status(200).json({
+        message: "Access token refreshed successfully. New token issued.",
+        accessToken
+    })
+})
+
+
+// Logout the current session
+export const logout = asyncHandler(async (req, res) => {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (!refreshToken) {
+        throw new AppError("No active session found. You may already be logged out.", 401)
+    }
+
+    const refreshTokenHash = crypto
+        .createHash("sha256")
+        .update(refreshToken)
+        .digest("hex")
+
+    const session = await sessionModel.findOne({
+        refreshTokenHash: refreshTokenHash,
+        revoked: false
+    })
+
+    if (!session) {
+        throw new AppError("Session is invalid or has already been revoked.", 401)
     }
 
     session.revoked = true
@@ -227,19 +184,23 @@ export const logout = async (req, res) => {
     return res.status(200).json({
         message: "Logged out successfully. Your session has been terminated."
     })
-}
+})
 
 
-export const logoutAll = async (req, res) => {
+// Logout from all devices by revoking all sessions
+export const logoutAll = asyncHandler(async (req, res) => {
     const refreshToken = req.cookies.refreshToken;
 
     if (!refreshToken) {
-        return res.status(401).json({
-            message: "No active session found. You may already be logged out from all devices."
-        })
+        throw new AppError("No active session found. You may already be logged out from all devices.", 401)
     }
 
-    const decoded = jwt.verify(refreshToken, config.JWT_SECRET)
+    let decoded;
+    try {
+        decoded = jwt.verify(refreshToken, config.JWT_SECRET)
+    } catch (error) {
+        throw new AppError("Refresh token is invalid or has expired. Please log in again.", 401)
+    }
 
     await sessionModel.updateMany({
         user: decoded.id,
@@ -253,5 +214,4 @@ export const logoutAll = async (req, res) => {
     return res.status(200).json({
         message: "Successfully logged out from all devices. All active sessions have been revoked."
     })
-
-}
+})

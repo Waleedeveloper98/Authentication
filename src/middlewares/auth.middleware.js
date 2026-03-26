@@ -1,14 +1,14 @@
 import jwt from "jsonwebtoken"
 import config from "../config/config.js"
+import AppError from "../utils/AppError.js"
 
-export const identifyUser = async (req, res, next) => {
+export const identifyUser = (req, res, next) => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({
-            message: "Access token missing"
-        })
+        return next(new AppError("Access token is missing. Please provide a valid Bearer token.", 401))
     }
+
     const token = authHeader.split(" ")[1]
 
     try {
@@ -16,11 +16,6 @@ export const identifyUser = async (req, res, next) => {
         req.user = decoded
         next()
     } catch (error) {
-        return res.status(400).json({
-            message: "Invalid user"
-        })
+        return next(new AppError("Access token is invalid or has expired. Please log in again.", 401))
     }
-
 }
-
-
