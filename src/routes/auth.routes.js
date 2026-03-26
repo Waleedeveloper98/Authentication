@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getMe, login, register } from "../controllers/auth.controller.js";
+import { getMe, login, logout, logoutAll, refresh, register } from "../controllers/auth.controller.js";
 import identifyUser from "../middlewares/auth.middleware.js";
 const authRouter = Router()
 
@@ -24,5 +24,27 @@ authRouter.post("/login", login)
  * @access Private
  */
 authRouter.get("/get-me", identifyUser, getMe)
+
+/**
+ * @route GET /api/auth/refresh-token
+ * @description Refresh access token
+ * @access Public
+ */
+authRouter.get("/refresh-token", refresh)
+
+/**
+ * @route GET /api/auth/logout
+ * @description Logout a user
+ * @access Public
+ */
+authRouter.get("/logout", logout)
+
+
+/**
+ * @route GET /api/auth/logout-all
+ * @description Logout from all devices
+ * @access 
+ */
+authRouter.get("/logout-all", logoutAll)
 
 export default authRouter
