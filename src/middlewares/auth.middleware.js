@@ -1,15 +1,16 @@
 import jwt from "jsonwebtoken"
 import config from "../config/config.js"
 
-const identifyUser = async (req, res, next) => {
-    const token = req.headers.authorization?.split(" ")[1]
-    console.log(token)
+export const identifyUser = async (req, res, next) => {
+    const authHeader = req.headers.authorization;
 
-    if (!token) {
-        return res.status(400).json({
-            message: "Unauthorized token not found"
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({
+            message: "Access token missing"
         })
     }
+    const token = authHeader.split(" ")[1]
+
     try {
         const decoded = jwt.verify(token, config.JWT_SECRET)
         req.user = decoded
@@ -22,4 +23,4 @@ const identifyUser = async (req, res, next) => {
 
 }
 
-export default identifyUser
+

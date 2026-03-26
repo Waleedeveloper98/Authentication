@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getMe, login, logout, logoutAll, refresh, register } from "../controllers/auth.controller.js";
-import identifyUser from "../middlewares/auth.middleware.js";
+import { identifyUser } from "../middlewares/auth.middleware.js";
 const authRouter = Router()
 
 
@@ -35,16 +35,16 @@ authRouter.get("/refresh-token", refresh)
 /**
  * @route GET /api/auth/logout
  * @description Logout a user
- * @access Public
+ * @access Private
  */
-authRouter.get("/logout", logout)
+authRouter.get("/logout", identifyUser, logout)
 
 
 /**
  * @route GET /api/auth/logout-all
  * @description Logout from all devices
- * @access 
+ * @access Private
  */
-authRouter.get("/logout-all", logoutAll)
+authRouter.get("/logout-all", identifyUser, logoutAll)
 
 export default authRouter
