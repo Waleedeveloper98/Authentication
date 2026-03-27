@@ -8,6 +8,9 @@ import AppError from "../utils/AppError.js"
 import { generateTokens } from "../utils/token.js"
 import setRefreshTokenCookie from "../utils/cookie.js"
 import createSession from "../utils/session.js"
+import { generateOtp, getOtpHtml } from "../utils/opt.js"
+import sendEmail from "../services/mail.service.js"
+import otpModel from "../models/otp.model.js"
 
 export const register = asyncHandler(async (req, res) => {
     const { username, email, password } = req.body
@@ -31,22 +34,32 @@ export const register = asyncHandler(async (req, res) => {
         password: hashedPassword
     })
 
-    const { refreshToken, refreshTokenHash } = generateTokens(user._id)
+    const otp = generateOtp()
+    const otpHtml = getOtpHtml(otp)
 
-    const session = await createSession(user._id, refreshTokenHash, req)
+    const otpHash = crypto.createHash("sha256").update(otp.toString()).digest("hex")
 
-    const { accessToken } = generateTokens(user._id, session._id)
+    const otpDoc = await otpModel.create({
+        email: user.email,
+        user: user._id,
+        otpHash: otpHash
+    })
 
-    setRefreshTokenCookie(res, refreshToken)
+    await sendEmail({
+        to: user.email,
+        subject: "Verify your email address",
+        html: otpHtml
+    })
 
     return res.status(201).json({
+        success: true,
         message: "Account created successfully. Welcome aboard!",
         user: {
             id: user.id,
             username: user.username,
             email: user.email,
-        },
-        accessToken
+            isVerified: user.isVerified
+        }
     })
 })
 
@@ -58,6 +71,10 @@ export const login = asyncHandler(async (req, res) => {
 
     if (!user) {
         throw new AppError("Invalid email or password. Please check your credentials and try again.", 401)
+    }
+
+    if (!user.isVerified) {
+        throw new AppError("Please verify your email address before logging in.", 401)
     }
 
     const hashedPassword = crypto.createHash("sha256").update(password).digest("hex")
@@ -214,4 +231,42 @@ export const logoutAll = asyncHandler(async (req, res) => {
     return res.status(200).json({
         message: "Successfully logged out from all devices. All active sessions have been revoked."
     })
+})
+
+export const verifyEmail = asyncHandler(async (req, res) => {
+    const { otp, email } = req.body
+    if (!otp) {
+        throw new AppError("OTP is required", 400)
+    }
+
+    const otpHash = crypto.createHash("sha256").update(otp.toString()).digest("hex")
+
+    const otpDoc = await otpModel.findOne({
+        email: email,
+        otpHash: otpHash,
+    })
+
+    if (!otpDoc) {
+        throw new AppError("Invalid OTP. Please try again.", 401)
+    }
+
+    const user = await userModel.findByIdAndUpdate(otpDoc.user, {
+        isVerified: true
+    })
+
+    await otpModel.deleteMany({
+        user: otpDoc.user
+    })
+
+    return res.status(200).json({
+        success: true,
+        message: "Email verified successfully",
+        user: {
+            id: user._id,
+            username: user.username,
+            email: user.email,
+        }
+    })
+
+
 })
